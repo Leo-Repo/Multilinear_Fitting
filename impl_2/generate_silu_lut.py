@@ -1,8 +1,42 @@
 #!/usr/bin/env python3
 
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 import os
+
+# Use a font that supports Chinese so labels/titles don't show as empty boxes
+def _setup_plot_font(use_english_fallback=False):
+    """Set font for Chinese labels; use_english_fallback=True to avoid empty boxes on systems without CJK fonts."""
+    matplotlib.rcParams["axes.unicode_minus"] = False  # fix minus sign
+    if use_english_fallback:
+        return "en"
+    try:
+        matplotlib.rcParams["font.sans-serif"] = [
+            "Microsoft YaHei", "SimHei", "SimSun", "KaiTi", "FangSong", "DejaVu Sans"
+        ]
+        return "zh"
+    except Exception:
+        return "en"
+
+
+def _plot_labels(lang):
+    """Return (xlabel, ylabel_silu, title_silu, ylabel_err, title_err) in the given language."""
+    if lang == "en":
+        return (
+            "Input x",
+            "SiLU(x) = x * sigmoid(x)",
+            "SiLU activation",
+            "Error (%)",
+            "Quantization error",
+        )
+    return (
+        "输入值 x",
+        "SiLU(x) = x * sigmoid(x)",
+        "SiLU激活函数",
+        "误差 (%)",
+        "量化误差分析",
+    )
 
 def sigmoid(x):
     """sigmoid函数"""
@@ -101,9 +135,11 @@ def save_lut_to_file(lut_data, filename, format='hex'):
     
     print(f"  文件保存成功！")
 
-def plot_silu_function(x_values, silu_values, silu_quantized, scale_factor):
-    """绘制SiLU函数图形"""
-    
+def plot_silu_function(x_values, silu_values, silu_quantized, scale_factor, use_english_labels=True):
+    """绘制SiLU函数图形。Default English labels to avoid empty boxes; set use_english_labels=False for Chinese (requires CJK font)."""
+    lang = _setup_plot_font(use_english_fallback=use_english_labels)
+    xlabel, ylabel_silu, title_silu, ylabel_err, title_err = _plot_labels(lang)
+
     plt.figure(figsize=(12, 5))
     
     # 子图1：原始SiLU函数
@@ -112,9 +148,9 @@ def plot_silu_function(x_values, silu_values, silu_quantized, scale_factor):
     plt.plot(x_values, silu_quantized/scale_factor, 'r--', 
              linewidth=1, label='SiLU (quantized)')
     plt.grid(True, alpha=0.3)
-    plt.xlabel('输入值 x')
-    plt.ylabel('SiLU(x) = x * sigmoid(x)')
-    plt.title('SiLU激活函数')
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel_silu)
+    plt.title(title_silu)
     plt.legend()
     
     # 子图2：量化误差
@@ -122,9 +158,9 @@ def plot_silu_function(x_values, silu_values, silu_quantized, scale_factor):
     error = silu_values - silu_quantized/scale_factor
     plt.plot(x_values, error * 100, 'g-', linewidth=1)
     plt.grid(True, alpha=0.3)
-    plt.xlabel('输入值 x')
-    plt.ylabel('误差 (%)')
-    plt.title('量化误差分析')
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel_err)
+    plt.title(title_err)
     
     plt.tight_layout()
     plt.savefig('silu_function_plot.png', dpi=150)

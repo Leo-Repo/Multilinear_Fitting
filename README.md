@@ -1,6 +1,6 @@
 # SiLU FP8 (E4M3) Quantization via Lookup Table
 
-## 任务说明 (Task)
+## impl_1
 
 - **目标**：用查表法实现 SiLU 函数的 FP8 (e4m3) 量化。
 - **测试设定**：使用 Conv+SiLU 的 ONNX 模型，约定如下：

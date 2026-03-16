@@ -1,5 +1,20 @@
 # SiLU FP8 (E4M3) Quantization via Lookup Table
 
+## Unified Flow (Recommended)
+
+Use the unified tool for one-stop generation of:
+
+- Full LUT
+- PWL parameters (`a, b, shift`)
+- Hardware files (`.hex/.coe/.bin`)
+- Error and resource report
+
+See [unified/README.md](./unified/README.md) and run:
+
+```bash
+python unified/unified_lut_tool.py --function silu --input-format fp8_e4m3 --compute-format q1_22_9 --output-format fp8_e4m3 --segments 16 --out-dir unified/out
+```
+
 ## impl_1
 
 - **目标**：用查表法实现 SiLU 函数的 FP8 (e4m3) 量化。

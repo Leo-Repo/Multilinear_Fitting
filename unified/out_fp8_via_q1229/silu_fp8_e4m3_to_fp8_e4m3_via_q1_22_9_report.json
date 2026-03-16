@@ -1,0 +1,38 @@
+{
+  "config": {
+    "function": "silu",
+    "input_format": "fp8_e4m3",
+    "output_format": "fp8_e4m3",
+    "compute_format": "q1_22_9",
+    "segments": 16,
+    "input_range": 8.0,
+    "lut_size": 256,
+    "slope_bits": 8,
+    "bias_bits": 16,
+    "bias_frac_bits": 9,
+    "shift_bits": 4,
+    "hw_formats": [
+      "hex",
+      "coe",
+      "bin"
+    ],
+    "out_dir": "unified/out_fp8_via_q1229"
+  },
+  "eval": {
+    "pwl_mae": 0.012546135050576527,
+    "pwl_max_abs_err": 0.05129872511592115,
+    "pwl_mse": 0.00035313588687353834,
+    "lut_mae": 0.07488324716675532,
+    "lut_max_abs_err": 0.497317198956269,
+    "lut_mse": 0.019926172968216447
+  },
+  "resource_estimate": {
+    "full_lut_rom_bits": 2048,
+    "pwl_param_rom_bits": 448,
+    "multiplier_input_bits": 32,
+    "multiplier_slope_bits": 8,
+    "multiplier_total_bits": 40,
+    "latency_cycles_lut_est": 1,
+    "latency_cycles_pwl_est": 3
+  }
+}

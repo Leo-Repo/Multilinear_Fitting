@@ -224,17 +224,47 @@ class PwlParams:
     bias_frac_bits: int
 
 
-def fit_pwl(
+def build_uniform_breakpoints(input_range: float, segments: int) -> np.ndarray:
+    return np.linspace(-input_range, input_range, segments + 1, dtype=np.float64)
+
+
+def build_adaptive_breakpoints(
     fn: Callable[[np.ndarray], np.ndarray],
     input_range: float,
     segments: int,
+    dense_points: int = 8193,
+) -> np.ndarray:
+    xs = np.linspace(-input_range, input_range, dense_points, dtype=np.float64)
+    ys = fn(xs)
+    dx = xs[1] - xs[0]
+    d1 = np.gradient(ys, dx)
+    d2 = np.gradient(d1, dx)
+    # Curvature-driven weighting; near high-curvature regions we allocate more segments.
+    w = np.abs(d2) + 1e-8
+    cdf = np.cumsum(w)
+    if cdf[-1] <= 0:
+        return build_uniform_breakpoints(input_range, segments)
+    cdf = cdf / cdf[-1]
+    t = np.linspace(0.0, 1.0, segments + 1, dtype=np.float64)
+    bps = np.interp(t, cdf, xs)
+    bps[0] = -input_range
+    bps[-1] = input_range
+    if np.any(np.diff(bps) <= 0):
+        return build_uniform_breakpoints(input_range, segments)
+    return bps
+
+
+def fit_pwl_with_breakpoints(
+    fn: Callable[[np.ndarray], np.ndarray],
+    breakpoints: np.ndarray,
     slope_bits: int,
     bias_bits: int,
     bias_frac_bits: int,
     shift_bits: int,
     eval_points_per_segment: int = 256,
 ) -> PwlParams:
-    bps = np.linspace(-input_range, input_range, segments + 1, dtype=np.float64)
+    bps = breakpoints.astype(np.float64)
+    segments = len(bps) - 1
     slope_q = np.zeros(segments, dtype=np.int64)
     bias_q = np.zeros(segments, dtype=np.int64)
     shift = np.zeros(segments, dtype=np.int64)
@@ -275,6 +305,136 @@ def fit_pwl(
         shift=shift,
         slope_scale_bits=slope_bits,
         bias_frac_bits=bias_frac_bits,
+    )
+
+
+def pwl_error_for_breakpoints(
+    fn: Callable[[np.ndarray], np.ndarray],
+    breakpoints: np.ndarray,
+    slope_bits: int,
+    bias_bits: int,
+    bias_frac_bits: int,
+    shift_bits: int,
+    objective: str,
+    eval_samples: int,
+) -> Tuple[float, PwlParams]:
+    params = fit_pwl_with_breakpoints(
+        fn=fn,
+        breakpoints=breakpoints,
+        slope_bits=slope_bits,
+        bias_bits=bias_bits,
+        bias_frac_bits=bias_frac_bits,
+        shift_bits=shift_bits,
+    )
+    xs = np.linspace(breakpoints[0], breakpoints[-1], eval_samples, dtype=np.float64)
+    y_ref = fn(xs)
+    y_hat = pwl_apply(xs, params)
+    if objective == "mse":
+        score = float(np.mean((y_hat - y_ref) ** 2))
+    elif objective == "maxabs":
+        score = float(np.max(np.abs(y_hat - y_ref)))
+    else:
+        raise ValueError(f"Unsupported objective: {objective}")
+    return score, params
+
+
+def build_global_opt_breakpoints(
+    fn: Callable[[np.ndarray], np.ndarray],
+    input_range: float,
+    segments: int,
+    slope_bits: int,
+    bias_bits: int,
+    bias_frac_bits: int,
+    shift_bits: int,
+    objective: str = "mse",
+    iterations: int = 3,
+    candidate_points: int = 17,
+    eval_samples: int = 4096,
+) -> np.ndarray:
+    bps = build_adaptive_breakpoints(fn, input_range, segments)
+    best_score, _ = pwl_error_for_breakpoints(
+        fn,
+        bps,
+        slope_bits,
+        bias_bits,
+        bias_frac_bits,
+        shift_bits,
+        objective,
+        eval_samples,
+    )
+    min_width = (2 * input_range) / (segments * 32.0)
+    for _ in range(iterations):
+        improved = False
+        for i in range(1, segments):
+            left = bps[i - 1] + min_width
+            right = bps[i + 1] - min_width
+            if right <= left:
+                continue
+            candidates = np.linspace(left, right, candidate_points, dtype=np.float64)
+            local_best_score = best_score
+            local_best_value = bps[i]
+            for c in candidates:
+                trial = bps.copy()
+                trial[i] = c
+                if np.any(np.diff(trial) <= 0):
+                    continue
+                score, _ = pwl_error_for_breakpoints(
+                    fn,
+                    trial,
+                    slope_bits,
+                    bias_bits,
+                    bias_frac_bits,
+                    shift_bits,
+                    objective,
+                    eval_samples,
+                )
+                if score < local_best_score:
+                    local_best_score = score
+                    local_best_value = c
+            if local_best_value != bps[i]:
+                bps[i] = local_best_value
+                best_score = local_best_score
+                improved = True
+        if not improved:
+            break
+    return bps
+
+
+def fit_pwl(
+    fn: Callable[[np.ndarray], np.ndarray],
+    input_range: float,
+    segments: int,
+    slope_bits: int,
+    bias_bits: int,
+    bias_frac_bits: int,
+    shift_bits: int,
+    segment_strategy: str,
+    global_objective: str,
+) -> PwlParams:
+    if segment_strategy == "uniform":
+        bps = build_uniform_breakpoints(input_range, segments)
+    elif segment_strategy == "adaptive":
+        bps = build_adaptive_breakpoints(fn, input_range, segments)
+    elif segment_strategy == "global_opt":
+        bps = build_global_opt_breakpoints(
+            fn=fn,
+            input_range=input_range,
+            segments=segments,
+            slope_bits=slope_bits,
+            bias_bits=bias_bits,
+            bias_frac_bits=bias_frac_bits,
+            shift_bits=shift_bits,
+            objective=global_objective,
+        )
+    else:
+        raise ValueError(f"Unsupported segment strategy: {segment_strategy}")
+    return fit_pwl_with_breakpoints(
+        fn=fn,
+        breakpoints=bps,
+        slope_bits=slope_bits,
+        bias_bits=bias_bits,
+        bias_frac_bits=bias_frac_bits,
+        shift_bits=shift_bits,
     )
 
 
@@ -322,6 +482,22 @@ def evaluate(
     }
 
 
+def evaluate_pwl_only(
+    fn: Callable[[np.ndarray], np.ndarray],
+    input_range: float,
+    pwl_params: PwlParams,
+    eval_samples: int = 20000,
+) -> Dict[str, float]:
+    xs = np.linspace(-input_range, input_range, eval_samples, dtype=np.float64)
+    y_ref = fn(xs)
+    y_pwl = pwl_apply(xs, pwl_params)
+    return {
+        "pwl_mae": float(np.mean(np.abs(y_pwl - y_ref))),
+        "pwl_max_abs_err": float(np.max(np.abs(y_pwl - y_ref))),
+        "pwl_mse": float(np.mean((y_pwl - y_ref) ** 2)),
+    }
+
+
 def estimate_resources(
     lut_entries: int,
     output_bits: int,
@@ -355,6 +531,23 @@ def main() -> None:
         help="Internal compute format (e.g., q1_22_9, int32, int8, fp8_e4m3).",
     )
     parser.add_argument("--segments", type=int, default=16)
+    parser.add_argument(
+        "--segment-strategy",
+        default="uniform",
+        choices=["uniform", "adaptive", "global_opt"],
+        help="How to determine segment breakpoints.",
+    )
+    parser.add_argument(
+        "--global-objective",
+        default="mse",
+        choices=["mse", "maxabs"],
+        help="Objective for global breakpoint optimization.",
+    )
+    parser.add_argument(
+        "--compare-strategies",
+        action="store_true",
+        help="Also evaluate and compare uniform/adaptive/global_opt strategies.",
+    )
     parser.add_argument("--input-range", type=float, default=8.0)
     parser.add_argument("--lut-size", type=int, default=256)
     parser.add_argument("--slope-bits", type=int, default=8)
@@ -392,6 +585,8 @@ def main() -> None:
         bias_bits=args.bias_bits,
         bias_frac_bits=args.bias_frac_bits,
         shift_bits=args.shift_bits,
+        segment_strategy=args.segment_strategy,
+        global_objective=args.global_objective,
     )
 
     # Eval
@@ -403,6 +598,31 @@ def main() -> None:
         output_fmt=output_fmt,
         pwl_params=pwl,
     )
+    strategy_comparison = {}
+    if args.compare_strategies:
+        for stg in ["uniform", "adaptive", "global_opt"]:
+            p = fit_pwl(
+                fn=fn,
+                input_range=args.input_range,
+                segments=args.segments,
+                slope_bits=args.slope_bits,
+                bias_bits=args.bias_bits,
+                bias_frac_bits=args.bias_frac_bits,
+                shift_bits=args.shift_bits,
+                segment_strategy=stg,
+                global_objective=args.global_objective,
+            )
+            strategy_comparison[stg] = evaluate_pwl_only(
+                fn=fn,
+                input_range=args.input_range,
+                pwl_params=p,
+            )
+
+        best_by_mse = min(strategy_comparison.items(), key=lambda x: x[1]["pwl_mse"])[0]
+        best_by_maxabs = min(strategy_comparison.items(), key=lambda x: x[1]["pwl_max_abs_err"])[0]
+    else:
+        best_by_mse = args.segment_strategy
+        best_by_maxabs = args.segment_strategy
     output_bits = output_fmt.total_bits
     input_compute_bits = compute_fmt.total_bits if compute_fmt.kind == "fixed" else 32
     resource = estimate_resources(
@@ -427,6 +647,8 @@ def main() -> None:
     np.savetxt(os.path.join(args.out_dir, f"{base}_full_lut_values.txt"), lut_y_q.astype(np.int64), fmt="%d")
 
     pwl_obj = {
+        "segment_strategy": args.segment_strategy,
+        "global_objective": args.global_objective,
         "breakpoints": pwl.breakpoints.tolist(),
         "slope_q": pwl.slope_q.tolist(),
         "bias_q": pwl.bias_q.tolist(),
@@ -460,6 +682,11 @@ def main() -> None:
     report = {
         "config": vars(args),
         "eval": eval_result,
+        "strategy_comparison": strategy_comparison,
+        "best_strategy": {
+            "by_mse": best_by_mse,
+            "by_max_abs_err": best_by_maxabs,
+        },
         "resource_estimate": resource,
     }
     report_path = os.path.join(args.out_dir, f"{base}_report.json")
@@ -472,6 +699,15 @@ def main() -> None:
     print("Eval:")
     for k, v in eval_result.items():
         print(f"  {k}: {v:.8f}")
+    if args.compare_strategies:
+        print("Strategy comparison (PWL only):")
+        for stg, ev in strategy_comparison.items():
+            print(
+                f"  {stg}: mse={ev['pwl_mse']:.8f}, "
+                f"max_abs={ev['pwl_max_abs_err']:.8f}, mae={ev['pwl_mae']:.8f}"
+            )
+        print(f"  best_by_mse: {best_by_mse}")
+        print(f"  best_by_max_abs_err: {best_by_maxabs}")
     print("Resource estimate:")
     for k, v in resource.items():
         print(f"  {k}: {v}")
